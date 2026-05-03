@@ -12,8 +12,11 @@ import fi.dy.masa.malilib.gui.button.IButtonActionListener;
 import fi.dy.masa.malilib.gui.widgets.WidgetListEntrySortable;
 import fi.dy.masa.malilib.render.RenderUtils;
 import fi.dy.masa.malilib.util.StringUtils;
+import fi.dy.masa.litematica.gui.GuiMaterialList;
+import fi.dy.masa.litematica.gui.GuiMaterialListBlockReplacement;
 import fi.dy.masa.litematica.gui.Icons;
 import fi.dy.masa.litematica.materials.MaterialListBase;
+import fi.dy.masa.litematica.materials.MaterialListPlacement;
 import fi.dy.masa.litematica.materials.MaterialListBase.SortCriteria;
 import fi.dy.masa.litematica.materials.MaterialListEntry;
 
@@ -69,16 +72,29 @@ public class WidgetMaterialListEntry extends WidgetListEntrySortable<MaterialLis
         int posX = x + width;
         int posY = y + 1;
 
-        // Note: These are placed from right to left
-
+        // Buttons are placed right-to-left: Ignore stays at the trailing edge when present.
         posX = this.createButtonGeneric(posX, posY, ButtonListener.ButtonType.IGNORE);
+
+        if (this.entry != null &&
+            this.materialList.supportsMaterialListBlockReplacement() &&
+            this.entry.hasSchematicReplacementSources())
+        {
+            posX = this.createButtonGeneric(posX, posY, ButtonListener.ButtonType.REPLACE);
+        }
     }
 
     private int createButtonGeneric(int xRight, int y, ButtonListener.ButtonType type)
     {
         String label = type.getDisplayName();
         ButtonListener listener = new ButtonListener(type, this.materialList, this.entry, this.listWidget);
-        return this.addButton(new ButtonGeneric(xRight, y, -1, true, label), listener).getX();
+        ButtonGeneric button = new ButtonGeneric(xRight, y, -1, true, label);
+
+        if (type.getHoverKeyOrNull() != null)
+        {
+            button.setHoverStrings(type.getHoverKeyOrNull());
+        }
+
+        return this.addButton(button, listener).getX();
     }
 
     public static void setMaxNameLength(List<MaterialListEntry> materials, int multiplier)
@@ -354,11 +370,19 @@ public class WidgetMaterialListEntry extends WidgetListEntrySortable<MaterialLis
 				this.materialList.ignoreEntry(this.entry);
 				this.listWidget.refreshEntries();
 			}
+			else if (this.type == ButtonType.REPLACE && this.materialList instanceof MaterialListPlacement placement)
+			{
+				GuiMaterialList gui = this.listWidget.getMaterialListGui();
+				GuiMaterialListBlockReplacement replacer = new GuiMaterialListBlockReplacement(gui, placement, this.entry);
+				replacer.setParent(gui);
+				GuiBase.openGui(replacer);
+			}
 		}
 
 		public enum ButtonType
 		{
-			IGNORE("litematica.gui.button.material_list.ignore");
+			IGNORE ("litematica.gui.button.material_list.ignore"),
+			REPLACE("litematica.gui.button.material_list.replace");
 
 			private final String translationKey;
 
@@ -370,6 +394,11 @@ public class WidgetMaterialListEntry extends WidgetListEntrySortable<MaterialLis
 			public String getDisplayName()
 			{
 				return StringUtils.translate(this.translationKey);
+			}
+
+			public String getHoverKeyOrNull()
+			{
+				return this == REPLACE ? "litematica.gui.button.hover.material_list.replace" : null;
 			}
 		}
 	}
