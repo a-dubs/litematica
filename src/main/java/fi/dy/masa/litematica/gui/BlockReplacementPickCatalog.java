@@ -4,14 +4,16 @@ import java.util.ArrayList;
 import java.util.Comparator;
 
 import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.level.block.state.BlockState;
 
 import com.google.common.collect.ImmutableList;
 
 import fi.dy.masa.litematica.materials.MaterialCache;
 
 /**
- * Builds a searchable catalog (block + every {@link BlockState} variant once) used by the schematic
- * material-list replacement dialog.
+ * Builds a searchable catalog with one canonical {@link BlockState} per registered block (typically
+ * {@link net.minecraft.world.level.block.Block#defaultBlockState()}). Orientation and other
+ * properties overlapping the source schematic state are reapplied during replacement.
  */
 public final class BlockReplacementPickCatalog
 {
@@ -54,17 +56,14 @@ public final class BlockReplacementPickCatalog
                 return;
             }
 
-            for (net.minecraft.world.level.block.state.BlockState state : block.getStateDefinition().getPossibleStates())
+            BlockState state = block.defaultBlockState();
+
+            if (state.isAir())
             {
-                BlockReplacementPickEntry candidate = BlockReplacementPickEntry.create(state, cache);
-
-                if (candidate.blockState().isAir())
-                {
-                    continue;
-                }
-
-                raw.add(candidate);
+                return;
             }
+
+            raw.add(BlockReplacementPickEntry.create(state, cache));
         });
 
         raw.sort(
