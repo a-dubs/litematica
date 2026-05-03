@@ -1,24 +1,49 @@
 package fi.dy.masa.litematica.materials;
 
+import com.google.common.collect.ImmutableSet;
+
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.state.BlockState;
 
 import fi.dy.masa.malilib.util.data.ItemType;
 
 public class MaterialListEntry
 {
     private final ItemType item;
+    private final ImmutableSet<BlockState> schematicReplaceSourceStates;
     private final int countTotal;
     private final int countMissing;
     private final int countMismatched;
     private int countAvailable;
 
-    public MaterialListEntry(ItemStack stack, int countTotal, int countMissing, int countMismatched, int countAvailable)
+    /**
+     * @param schematicReplaceSourceStates Block states keyed to this stack for wholesale schematic
+     *        replacement ({@linkplain MaterialListSourceStates expanded paired halves}); empty means
+     *        replacement from this row is not supported.
+     */
+    public MaterialListEntry(ItemStack stack, int countTotal, int countMissing, int countMismatched, int countAvailable,
+                             ImmutableSet<BlockState> schematicReplaceSourceStates)
     {
         this.item = new ItemType(stack, true, false);
+        this.schematicReplaceSourceStates = schematicReplaceSourceStates;
         this.countTotal = countTotal;
         this.countMissing = countMissing;
         this.countMismatched = countMismatched;
         this.countAvailable = countAvailable;
+    }
+
+    public ImmutableSet<BlockState> getSchematicReplaceSourceStates()
+    {
+        return this.schematicReplaceSourceStates;
+    }
+
+    /**
+     * @return Whether this row can participate in schematic replacement workflows (material list /
+     *         placement tooling).
+     */
+    public boolean hasSchematicReplacementSources()
+    {
+        return !this.schematicReplaceSourceStates.isEmpty();
     }
 
     public ItemStack getStack()

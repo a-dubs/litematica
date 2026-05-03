@@ -41,6 +41,15 @@ public abstract class MaterialListBase implements IMaterialList
         return false;
     }
 
+    /**
+     * Placement-backed material lists can rewrite schematic placement storage from the UI; schematic-only
+     * or analyzer lists decline this workflow.
+     */
+    public boolean supportsMaterialListBlockReplacement()
+    {
+        return false;
+    }
+
     public MaterialListHudRenderer getHudRenderer()
     {
         return this.hudRenderer;

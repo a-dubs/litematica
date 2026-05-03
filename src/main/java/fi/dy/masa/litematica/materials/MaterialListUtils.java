@@ -3,7 +3,13 @@ package fi.dy.masa.litematica.materials;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
+
+import javax.annotation.Nullable;
+
+import com.google.common.collect.ImmutableSet;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
+import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet;
 
 import net.minecraft.client.Minecraft;
 import net.minecraft.core.NonNullList;
@@ -75,8 +81,10 @@ public class MaterialListUtils
             Object2IntOpenHashMap<ItemType> itemTypesTotal = new Object2IntOpenHashMap<>();
             Object2IntOpenHashMap<ItemType> itemTypesMissing = new Object2IntOpenHashMap<>();
             Object2IntOpenHashMap<ItemType> itemTypesMismatch = new Object2IntOpenHashMap<>();
+            Object2ObjectOpenHashMap<ItemType, ObjectOpenHashSet<BlockState>> schematicSourcesByTypeTotal =
+                    new Object2ObjectOpenHashMap<>();
 
-            convertStatesToStacks(countsTotal, itemTypesTotal, cache);
+            convertStatesToStacksWithReplacementSources(countsTotal, itemTypesTotal, schematicSourcesByTypeTotal, cache);
             convertStatesToStacks(countsMissing, itemTypesMissing, cache);
             convertStatesToStacks(countsMismatch, itemTypesMismatch, cache);
 
@@ -90,7 +98,8 @@ public class MaterialListUtils
                                                    itemTypesTotal.getInt(type),
                                                    itemTypesMissing.getInt(type),
                                                    itemTypesMismatch.getInt(type),
-                                                   playerInvItems.getInt(type)));
+                                                   playerInvItems.getInt(type),
+                                                   toImmutableSourceSet(schematicSourcesByTypeTotal.get(type))));
                 }
             }
             else
@@ -101,12 +110,150 @@ public class MaterialListUtils
                                                    itemTypesTotal.getInt(type),
                                                    itemTypesMissing.getInt(type),
                                                    itemTypesMismatch.getInt(type),
-                                                   0));
+                                                   0,
+                                                   toImmutableSourceSet(schematicSourcesByTypeTotal.get(type))));
                 }
             }
         }
 
         return list;
+    }
+
+    private static ImmutableSet<BlockState> toImmutableSourceSet(@Nullable ObjectOpenHashSet<BlockState> setIn)
+    {
+        if (setIn == null || setIn.isEmpty())
+        {
+            return ImmutableSet.of();
+        }
+
+        return ImmutableSet.copyOf(setIn);
+    }
+
+    private static void convertStatesToStacksWithReplacementSources(
+            Object2IntOpenHashMap<BlockState> blockStatesIn,
+            Object2IntOpenHashMap<ItemType> itemTypesOut,
+            Object2ObjectOpenHashMap<ItemType, ObjectOpenHashSet<BlockState>> schematicSourcesOut,
+            MaterialCache cache)
+    {
+        for (BlockState state : blockStatesIn.keySet())
+        {
+            accumulateOneSchematicBlockStateIntoItemTypes(
+                    state,
+                    blockStatesIn.getInt(state),
+                    itemTypesOut,
+                    schematicSourcesOut,
+                    cache);
+        }
+    }
+
+    private static void accumulateOneSchematicBlockStateIntoItemTypes(BlockState schematicStateStored,
+                                                                      int count,
+                                                                      Object2IntOpenHashMap<ItemType> itemTypesOut,
+                                                                      Object2ObjectOpenHashMap<ItemType,
+                                                                              ObjectOpenHashSet<BlockState>> schematicSourcesOut,
+                                                                      MaterialCache cache)
+    {
+        BlockState primary = isWaterloggedBlock(schematicStateStored) ?
+                             getBaseBlockState(schematicStateStored) :
+                             schematicStateStored;
+
+        if (isWaterloggedBlock(schematicStateStored))
+        {
+            itemTypesOut.addTo(new ItemType(new ItemStack(Items.WATER_BUCKET), false, false), count);
+            // Water bucket stacks are synthesized; omit block pins on synthesized bucket rows only.
+        }
+
+        final BlockState schematicKeyForPins = schematicStateStored;
+
+        if (cache.requiresMultipleItems(primary))
+        {
+            boolean sawNonEmptyProduct = false;
+
+            for (ItemStack stack : cache.getItems(primary))
+            {
+                if (!stack.isEmpty())
+                {
+                    sawNonEmptyProduct = true;
+                    ItemType typeKey = new ItemType(stack, true, false);
+
+                    itemTypesOut.addTo(typeKey, count * stack.getCount());
+                    addReplacementSourcesFor(schematicSourcesOut, typeKey, schematicKeyForPins);
+                }
+            }
+
+            if (!sawNonEmptyProduct)
+            {
+                maybeAddBareBlock(primary, schematicKeyForPins, count, itemTypesOut, schematicSourcesOut, cache);
+            }
+        }
+        else
+        {
+            ItemStack stack = cache.getRequiredBuildItemForState(primary);
+
+            if (!stack.isEmpty())
+            {
+                ItemType typeKey = new ItemType(stack, true, false);
+
+                itemTypesOut.addTo(typeKey, count * stack.getCount());
+                addReplacementSourcesFor(schematicSourcesOut, typeKey, schematicKeyForPins);
+            }
+            else
+            {
+                maybeAddBareBlock(primary, schematicKeyForPins, count, itemTypesOut, schematicSourcesOut, cache);
+            }
+        }
+    }
+
+    /**
+     * {@link MaterialCache} omits some halves; synthesize stacks from vanilla block-as-item mappings so
+     * tall blocks still expose replacement pins keyed to schematic storage.
+     */
+    private static void maybeAddBareBlock(BlockState primary,
+                                          BlockState schematicStateStoredRaw,
+                                          int count,
+                                          Object2IntOpenHashMap<ItemType> itemTypesOut,
+                                          Object2ObjectOpenHashMap<ItemType, ObjectOpenHashSet<BlockState>> schematicSourcesOut,
+                                          MaterialCache cache)
+    {
+        ItemStack stackBare = cache.getRequiredBuildItemForState(primary);
+
+        if (stackBare.isEmpty() == false)
+        {
+            return;
+        }
+
+        ItemStack asItemFallback = primary.getBlock().asItem().getDefaultInstance();
+
+        if (asItemFallback.isEmpty())
+        {
+            return;
+        }
+
+        ItemType typeKey = new ItemType(asItemFallback, true, false);
+
+        itemTypesOut.addTo(typeKey, count);
+        addReplacementSourcesFor(schematicSourcesOut, typeKey, schematicStateStoredRaw);
+    }
+
+    private static void addReplacementSourcesFor(Object2ObjectOpenHashMap<ItemType, ObjectOpenHashSet<BlockState>> out,
+                                                 ItemType typeKey,
+                                                 @Nullable BlockState schematicBlockStateKey)
+    {
+        if (schematicBlockStateKey == null)
+        {
+            return;
+        }
+
+        ObjectOpenHashSet<BlockState> set = out.get(typeKey);
+
+        if (set == null)
+        {
+            set = new ObjectOpenHashSet<>();
+
+            out.put(typeKey, set);
+        }
+
+        MaterialListSourceStates.addExpanded(set, schematicBlockStateKey);
     }
 
     private static void convertStatesToStacks(

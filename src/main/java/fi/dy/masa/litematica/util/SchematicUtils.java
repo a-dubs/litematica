@@ -27,6 +27,7 @@ import net.minecraft.world.level.block.state.properties.Property;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.objects.ObjectOpenHashSet;
 import fi.dy.masa.malilib.gui.GuiBase;
 import fi.dy.masa.malilib.gui.GuiTextInput;
 import fi.dy.masa.malilib.gui.GuiTextInputStackedMultiLine;
@@ -37,6 +38,7 @@ import fi.dy.masa.malilib.util.GuiUtils;
 import fi.dy.masa.malilib.util.InfoUtils;
 import fi.dy.masa.malilib.util.LayerRange;
 import fi.dy.masa.malilib.util.SubChunkPos;
+import fi.dy.masa.litematica.Litematica;
 import fi.dy.masa.litematica.config.Configs;
 import fi.dy.masa.litematica.data.DataManager;
 import fi.dy.masa.litematica.data.SchematicHolder;
@@ -202,6 +204,225 @@ public class SchematicUtils
         }
 
         return false;
+    }
+
+    /**
+     * Replaces schematic-storage blocks keyed to one material-list row across all placement-enabled
+     * sub-regions. Runs in two phases so schematic data is not left half-written on validation failure.
+     * <p>
+     * {@code iterationSlice} should match whatever {@link LayerRange}
+     * was used alongside the originating material counts (typically from
+     * {@link fi.dy.masa.litematica.materials.MaterialListPlacement#getMaterialListIterationLayerRange()}).
+     */
+    public static boolean replaceMaterialRowBlocksAcrossPlacement(SchematicPlacement placement,
+                                                                   Iterable<BlockState> sourceStatesMaterialRowForm,
+                                                                   BlockState replacementMaterialRowForm,
+                                                                   Level world,
+                                                                   @Nullable LayerRange iterationSlice)
+    {
+        if (placement == null || placement.getSchematic() == null || replacementMaterialRowForm == null)
+        {
+            return false;
+        }
+
+        ObjectOpenHashSet<BlockState> filteredSources = new ObjectOpenHashSet<>();
+
+        if (sourceStatesMaterialRowForm != null)
+        {
+            for (BlockState st : sourceStatesMaterialRowForm)
+            {
+                if (st != null && st.isAir() == false)
+                {
+                    filteredSources.add(st);
+                }
+            }
+        }
+
+        if (filteredSources.isEmpty())
+        {
+            return false;
+        }
+
+        List<String> regions = new ArrayList<>(placement.getSubRegionBoxes(RequiredEnabled.PLACEMENT_ENABLED).keySet());
+
+        if (regions.isEmpty())
+        {
+            return false;
+        }
+
+        LayerRange range = iterationSlice != null ? iterationSlice : DataManager.getRenderLayerRange();
+        LitematicaSchematic schematic = placement.getSchematic();
+
+        ArrayList<MaterialRowReplacementSlice> slices = new ArrayList<>();
+
+        for (String regionName : regions)
+        {
+            LitematicaBlockStateContainer container = schematic.getSubRegionContainer(regionName);
+            SubRegionPlacement relativeSubPlacement = placement.getRelativeSubRegionPlacement(regionName);
+
+            if (container == null || relativeSubPlacement == null)
+            {
+                continue;
+            }
+
+            BlockState replacementUntransformed = getUntransformedBlockState(replacementMaterialRowForm, placement,
+                    regionName);
+
+            ObjectOpenHashSet<BlockState> untransformedSources = new ObjectOpenHashSet<>(filteredSources.size());
+
+            for (BlockState rendered : filteredSources)
+            {
+                BlockState reversed = getUntransformedBlockState(rendered, placement, regionName);
+
+                if (reversed != null && reversed.isAir() == false)
+                {
+                    untransformedSources.add(reversed);
+                }
+            }
+
+            if (untransformedSources.isEmpty())
+            {
+                continue;
+            }
+
+            int minX = range.getClampedValue(-30000000, Direction.Axis.X);
+            int minZ = range.getClampedValue(-30000000, Direction.Axis.Z);
+            int maxX = range.getClampedValue(30000000, Direction.Axis.X);
+            int maxZ = range.getClampedValue(30000000, Direction.Axis.Z);
+            int minY = range.getClampedValue(world.getMinY(), Direction.Axis.Y);
+            int maxY = range.getClampedValue(world.getMaxY(), Direction.Axis.Y);
+
+            BlockPos posStart = new BlockPos(minX, minY, minZ);
+            BlockPos posEnd = new BlockPos(maxX, maxY, maxZ);
+
+            BlockPos pos1 = getReverserTransformedWorldPosition(posStart, schematic,
+                    regionName, placement, relativeSubPlacement);
+            BlockPos pos2 = getReverserTransformedWorldPosition(posEnd, schematic,
+                    regionName, placement, relativeSubPlacement);
+
+            if (pos1 == null || pos2 == null)
+            {
+                Litematica.LOGGER.warn("Material row replacement: bad layer-box transform for '{}'", regionName);
+                return false;
+            }
+
+            BlockPos posStartWorld = PositionUtils.getMinCorner(pos1, pos2);
+            BlockPos posEndWorld = PositionUtils.getMaxCorner(pos1, pos2);
+
+            Vec3i size = container.getSize();
+            final int startX = Math.max(posStartWorld.getX(), 0);
+            final int startY = Math.max(posStartWorld.getY(), 0);
+            final int startZ = Math.max(posStartWorld.getZ(), 0);
+            final int endX = Math.min(posEndWorld.getX(), size.getX() - 1);
+            final int endY = Math.min(posEndWorld.getY(), size.getY() - 1);
+            final int endZ = Math.min(posEndWorld.getZ(), size.getZ() - 1);
+
+            if (startX < 0 || startY < 0 || startZ < 0 ||
+                endX >= size.getX() ||
+                endY >= size.getY() ||
+                endZ >= size.getZ())
+            {
+                Litematica.LOGGER.warn(
+                        "Material row replacement: computed slice out of '{}' bounds (sx={},sy={},sz={}, ex={},ey={},ez={}, size={}, {}, {})",
+                        regionName,
+                        startX, startY, startZ,
+                        endX, endY, endZ,
+                        size.getX(), size.getY(), size.getZ());
+                return false;
+            }
+
+            if (startX > endX || startY > endY || startZ > endZ)
+            {
+                Litematica.LOGGER.warn(
+                        "Material row replacement: empty iteration box for '{}' (sx={},sy={},sz={}, ex={},ey={},ez={})",
+                        regionName, startX, startY, startZ, endX, endY, endZ);
+                return false;
+            }
+
+            slices.add(new MaterialRowReplacementSlice(container, untransformedSources, replacementUntransformed,
+                    startX, startY, startZ,
+                    endX, endY, endZ));
+        }
+
+        if (slices.isEmpty())
+        {
+            return false;
+        }
+
+        SchematicMetadata metadata = schematic.getMetadata();
+        int totalBlocks = metadata.getTotalBlocks();
+
+        for (MaterialRowReplacementSlice slice : slices)
+        {
+            for (int y = slice.startY(); y <= slice.endY(); ++y)
+            {
+                for (int z = slice.startZ(); z <= slice.endZ(); ++z)
+                {
+                    for (int x = slice.startX(); x <= slice.endX(); ++x)
+                    {
+                        BlockState oldState = slice.container().get(x, y, z);
+
+                        if (!slice.sources().contains(oldState))
+                        {
+                            continue;
+                        }
+
+                        BlockState finalState = composeMaterialReplacementState(oldState, slice.replacement());
+
+                        totalBlocks += nonAirDelta(oldState, finalState);
+                        slice.container().set(x, y, z, finalState);
+                    }
+                }
+            }
+        }
+
+        metadata.setTotalBlocks(totalBlocks);
+        metadata.setTimeModifiedToNow();
+        metadata.setModifiedSinceSaved();
+
+        DataManager.getSchematicPlacementManager().markAllPlacementsOfSchematicForRebuild(schematic);
+
+        return true;
+    }
+
+    /**
+     * One placement sub-region slab ready for second-phase mutation.
+     */
+    private record MaterialRowReplacementSlice(LitematicaBlockStateContainer container,
+                                              ObjectOpenHashSet<BlockState> sources,
+                                              BlockState replacement,
+                                              int startX,
+                                              int startY,
+                                              int startZ,
+                                              int endX,
+                                              int endY,
+                                              int endZ)
+    {
+    }
+
+    private static int nonAirDelta(BlockState fromState, BlockState toState)
+    {
+        boolean fromOccupies = !fromState.isAir();
+        boolean toOccupies = !toState.isAir();
+
+        return (toOccupies ? 1 : 0) - (fromOccupies ? 1 : 0);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static BlockState composeMaterialReplacementState(BlockState oldStorageState,
+                                                              BlockState newTemplateUntransformed)
+    {
+        BlockState merged = newTemplateUntransformed;
+
+        for (Property<?> prop : newTemplateUntransformed.getProperties())
+        {
+            if (oldStorageState.hasProperty(prop))
+            {
+                merged = BlockUtils.getBlockStateWithProperty(merged, prop, oldStorageState.getValue(prop));
+            }
+        }
+
+        return merged;
     }
 
     public static boolean breakSchematicBlocks(Minecraft mc)

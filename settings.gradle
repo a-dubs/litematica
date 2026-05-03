@@ -7,3 +7,8 @@ pluginManagement {
 		gradlePluginPortal()
 	}
 }
+
+// Auto-download a matching JDK for compile tasks (Minecraft 26.x targets Java 25).
+plugins {
+	id 'org.gradle.toolchains.foojay-resolver-convention' version '0.9.0'
+}
