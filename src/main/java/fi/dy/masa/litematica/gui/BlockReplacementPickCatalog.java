@@ -58,11 +58,6 @@ public final class BlockReplacementPickCatalog
 
             BlockState state = block.defaultBlockState();
 
-            if (state.isAir())
-            {
-                return;
-            }
-
             raw.add(BlockReplacementPickEntry.create(state, cache));
         });
 
